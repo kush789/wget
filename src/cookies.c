@@ -439,8 +439,22 @@ parse_set_cookie (const char *set_cookie, bool silent)
         }
       else if (TOKEN_IS (name, "secure"))
         {
-          /* ignore value completely */
+#ifdef HAVE_SSL
+          /* Ignore value completely since secure is a value-less 
+             attribute */
           cookie->secure = 1;
+#else
+          /* Deleting cookie since secure only flag is set but no OpenSSL
+             or GNUTLS */
+          if (!silent)
+            logprintf (LOG_NOTQUIET, 
+                       _("Trying to create secure only cookie, but connection 
+                          is not secure (OpenSSl or GNUTLS not configured)\n
+                          Set-Cookie : %s\n"),
+                       quotearg_style (escape_quoting_style, set_cookie));
+          delete_cookie (cookie);
+          return NULL;
+#endif
         }
       /* else: Ignore unrecognized attribute. */
     }
