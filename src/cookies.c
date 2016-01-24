@@ -713,16 +713,74 @@ check_path_match (const char *cookie_path, const char *path)
   s = PS_newstr;                                                \
 } while (0)
 
+/* Return a count of how many times CHR occurs in STRING. */
+
+static int
+count_char (const char *string, char chr)
+{
+  const char *p;
+  int count = 0;
+  for (p = string; *p; p++)
+    if (*p == chr)
+      ++count;
+  return count;
+}
+
+/* Find the cookie chains whose domains match HOST and store them to
+   DEST.
+
+   A cookie chain is the head of a list of cookies that belong to a
+   host/domain.  Given HOST "img.search.xemacs.org", this function
+   will return the chains for "img.search.xemacs.org",
+   "search.xemacs.org", and "xemacs.org" -- those of them that exist
+   (if any), that is.
+
+   DEST should be large enough to accept (in the worst case) as many
+   elements as there are domain components of HOST.  */
+
+static int
+find_chains_of_host (struct cookie_jar *jar, const char *host,
+                     struct cookie *dest[])
+{
+  int dest_count = 0;
+  int passes, passcnt;
+
+  /* Bail out quickly if there are no cookies in the jar.  */
+  if (!hash_table_count (jar->chains))
+    return 0;
+
+  if (numeric_address_p (host))
+    /* If host is an IP address, only check for the exact match. */
+    passes = 1;
+  else
+    /* Otherwise, check all the subdomains except the top-level (last)
+       one.  As a domain with N components has N-1 dots, the number of
+       passes equals the number of dots.  */
+    passes = count_char (host, '.');
+
+  passcnt = 0;
+
+  /* Find chains that match HOST, starting with exact match and
+     progressing to less specific domains.  For instance, given HOST
+     fly.srk.fer.hr, first look for fly.srk.fer.hr's chain, then
+     srk.fer.hr's, then fer.hr's.  */
+  while (1)
+    {
+      struct cookie *chain = hash_table_get (jar->chains, host);
+      if (chain)
+        dest[dest_count++] = chain;
+      if (++passcnt >= passes)
+        break;
+      host = strchr (host, '.') + 1;
+    }
+
+  return dest_count;
+}
+
 /* Process the HTTP `Set-Cookie' header.  This results in storing the
    cookie or discarding a matching one, or ignoring it completely, all
    depending on the contents.  */
 
-static int
-find_chains_of_host (struct cookie_jar *jar, const char *host,
-                     struct cookie *dest[]);
-
-static int
-count_char (const char *string, char chr);
 
 void
 cookie_handle_set_cookie (struct cookie_jar *jar,
@@ -833,70 +891,6 @@ cookie_handle_set_cookie (struct cookie_jar *jar,
 /* Support for sending out cookies in HTTP requests, based on
    previously stored cookies.  Entry point is
    `build_cookies_request'.  */
-
-/* Return a count of how many times CHR occurs in STRING. */
-
-static int
-count_char (const char *string, char chr)
-{
-  const char *p;
-  int count = 0;
-  for (p = string; *p; p++)
-    if (*p == chr)
-      ++count;
-  return count;
-}
-
-/* Find the cookie chains whose domains match HOST and store them to
-   DEST.
-
-   A cookie chain is the head of a list of cookies that belong to a
-   host/domain.  Given HOST "img.search.xemacs.org", this function
-   will return the chains for "img.search.xemacs.org",
-   "search.xemacs.org", and "xemacs.org" -- those of them that exist
-   (if any), that is.
-
-   DEST should be large enough to accept (in the worst case) as many
-   elements as there are domain components of HOST.  */
-
-static int
-find_chains_of_host (struct cookie_jar *jar, const char *host,
-                     struct cookie *dest[])
-{
-  int dest_count = 0;
-  int passes, passcnt;
-
-  /* Bail out quickly if there are no cookies in the jar.  */
-  if (!hash_table_count (jar->chains))
-    return 0;
-
-  if (numeric_address_p (host))
-    /* If host is an IP address, only check for the exact match. */
-    passes = 1;
-  else
-    /* Otherwise, check all the subdomains except the top-level (last)
-       one.  As a domain with N components has N-1 dots, the number of
-       passes equals the number of dots.  */
-    passes = count_char (host, '.');
-
-  passcnt = 0;
-
-  /* Find chains that match HOST, starting with exact match and
-     progressing to less specific domains.  For instance, given HOST
-     fly.srk.fer.hr, first look for fly.srk.fer.hr's chain, then
-     srk.fer.hr's, then fer.hr's.  */
-  while (1)
-    {
-      struct cookie *chain = hash_table_get (jar->chains, host);
-      if (chain)
-        dest[dest_count++] = chain;
-      if (++passcnt >= passes)
-        break;
-      host = strchr (host, '.') + 1;
-    }
-
-  return dest_count;
-}
 
 /* If FULL_PATH begins with PREFIX, return the length of PREFIX, zero
    otherwise.  */
