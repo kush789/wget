@@ -350,7 +350,8 @@ discard_matching_cookie (struct cookie_jar *jar, struct cookie *cookie)
    filled.  */
 
 static struct cookie *
-parse_set_cookie (const char *set_cookie, bool silent)
+parse_set_cookie (const char *set_cookie, enum url_scheme scheme,
+                  bool silent)
 {
   const char *ptr = set_cookie;
   struct cookie *cookie = cookie_new ();
@@ -439,22 +440,21 @@ parse_set_cookie (const char *set_cookie, bool silent)
         }
       else if (TOKEN_IS (name, "secure"))
         {
-#ifdef HAVE_SSL
+          if (scheme == SCHEME_HTTPS)
           /* Ignore value completely since secure is a value-less 
-             attribute */
-          cookie->secure = 1;
-#else
-          /* Deleting cookie since secure only flag is set but no OpenSSL
-             or GNUTLS */
-          if (!silent)
-            logprintf (LOG_NOTQUIET, 
-                       _("Trying to create secure only cookie, but connection 
-                          is not secure (OpenSSl or GNUTLS not configured)\n
-                          Set-Cookie : %s\n"),
-                       quotearg_style (escape_quoting_style, set_cookie));
-          delete_cookie (cookie);
-          return NULL;
-#endif
+             attribute*/
+            cookie->secure = 1;
+          else
+            {
+              /* Deleting cookie since secure only flag is set but connection
+                 is not secure. */
+              if (!silent)
+                  logprintf (LOG_NOTQUIET, 
+                            _("Trying to create secure only cookie, but connection is not secure.\nSet-Cookie : %s\n"),
+                              quotearg_style (escape_quoting_style, set_cookie));
+                delete_cookie (cookie);
+                return NULL;
+            }
         }
       /* else: Ignore unrecognized attribute. */
     }
@@ -713,6 +713,27 @@ check_path_match (const char *cookie_path, const char *path)
   s = PS_newstr;                                                \
 } while (0)
 
+static int
+check_cookie_matching_name_domain (struct cookie_jar *jar,
+                                  struct cookie *cookie)
+{
+  struct cookie *chain, *prev;
+
+  chain = hash_table_get (jar->chains, cookie->domain);
+  
+  if (!chain)
+    return 0;
+
+  prev = NULL;
+  for (; chain; prev = chain, chain = chain->next)
+    if (0 == strcmp (cookie->attr, chain->attr)
+        && 1 == chain->secure)
+      {
+        return 1;
+      }
+
+  return 0;
+}
 
 /* Process the HTTP `Set-Cookie' header.  This results in storing the
    cookie or discarding a matching one, or ignoring it completely, all
@@ -721,7 +742,8 @@ check_path_match (const char *cookie_path, const char *path)
 void
 cookie_handle_set_cookie (struct cookie_jar *jar,
                           const char *host, int port,
-                          const char *path, const char *set_cookie)
+                          const char *path, enum url_scheme scheme,
+                          const char *set_cookie)
 {
   struct cookie *cookie;
   cookies_now = time (NULL);
@@ -731,7 +753,7 @@ cookie_handle_set_cookie (struct cookie_jar *jar,
      simply prepend slash to PATH.  */
   PREPEND_SLASH (path);
 
-  cookie = parse_set_cookie (set_cookie, false);
+  cookie = parse_set_cookie (set_cookie, scheme, false);
   if (!cookie)
     goto out;
 
