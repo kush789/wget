@@ -1457,7 +1457,7 @@ test_cookies (void)
       const char **expected = tests_succ[i].results;
       struct cookie *c;
 
-      c = parse_set_cookie (data, true);
+      c = parse_set_cookie (data, SCHEME_HTTPS, true);
       if (!c)
         {
           printf ("NULL cookie returned for valid data: %s\n", data);
@@ -1497,7 +1497,7 @@ test_cookies (void)
     {
       struct cookie *c;
       char *data = tests_fail[i];
-      c = parse_set_cookie (data, true);
+      c = parse_set_cookie (data, SCHEME_HTTPS, true);
       if (c)
         printf ("Failed to report error on invalid data: %s\n", data);
     }
