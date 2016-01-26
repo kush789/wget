@@ -350,7 +350,8 @@ discard_matching_cookie (struct cookie_jar *jar, struct cookie *cookie)
    filled.  */
 
 static struct cookie *
-parse_set_cookie (const char *set_cookie, bool silent)
+parse_set_cookie (const char *set_cookie, enum url_scheme scheme,
+                  bool silent)
 {
   const char *ptr = set_cookie;
   struct cookie *cookie = cookie_new ();
@@ -439,8 +440,30 @@ parse_set_cookie (const char *set_cookie, bool silent)
         }
       else if (TOKEN_IS (name, "secure"))
         {
-          /* ignore value completely */
-          cookie->secure = 1;
+#ifdef HAVE_SSL
+          if (scheme == SCHEME_HTTPS)
+          /* Ignore value completely since secure is a value-less 
+             attribute*/
+            cookie->secure = 1;
+          else
+            {
+              /* Deleting cookie since secure only flag is set but connection
+                 is not secure. */
+              if (!silent)
+                  logprintf (LOG_NOTQUIET,
+                            _("Trying to create secure only cookie, but connection is not secure.\nSet-Cookie : %s\n"),
+                              quotearg_style (escape_quoting_style, set_cookie));
+              delete_cookie (cookie);
+              return NULL;
+            }
+#else
+          if (!silent)
+              logprintf (LOG_NOTQUIET,
+                        _("Trying to create secure only cookie, wget configured with\" --without-ssl.\nSet-Cookie : %s\n"),
+                          quotearg_style (escape_quoting_style, set_cookie));
+          delete_cookie (cookie);
+          return NULL;
+#endif
         }
       /* else: Ignore unrecognized attribute. */
     }
@@ -699,95 +722,6 @@ check_path_match (const char *cookie_path, const char *path)
   s = PS_newstr;                                                \
 } while (0)
 
-
-/* Process the HTTP `Set-Cookie' header.  This results in storing the
-   cookie or discarding a matching one, or ignoring it completely, all
-   depending on the contents.  */
-
-void
-cookie_handle_set_cookie (struct cookie_jar *jar,
-                          const char *host, int port,
-                          const char *path, const char *set_cookie)
-{
-  struct cookie *cookie;
-  cookies_now = time (NULL);
-
-  /* Wget's paths don't begin with '/' (blame rfc1808), but cookie
-     usage assumes /-prefixed paths.  Until the rest of Wget is fixed,
-     simply prepend slash to PATH.  */
-  PREPEND_SLASH (path);
-
-  cookie = parse_set_cookie (set_cookie, false);
-  if (!cookie)
-    goto out;
-
-  /* Sanitize parts of cookie. */
-
-  if (!cookie->domain)
-    {
-      cookie->domain = xstrdup (host);
-      cookie->domain_exact = 1;
-      /* Set the port, but only if it's non-default. */
-      if (port != 80 && port != 443)
-        cookie->port = port;
-    }
-  else
-    {
-      if (!check_domain_match (cookie->domain, host))
-        {
-          logprintf (LOG_NOTQUIET,
-                     _("Cookie coming from %s attempted to set domain to "),
-                     quotearg_style (escape_quoting_style, host));
-          logprintf (LOG_NOTQUIET,
-                     _("%s\n"),
-                     quotearg_style (escape_quoting_style, cookie->domain));
-          cookie->discard_requested = true;
-        }
-    }
-
-  if (!cookie->path)
-    {
-      /* The cookie doesn't set path: set it to the URL path, sans the
-         file part ("/dir/file" truncated to "/dir/").  */
-      char *trailing_slash = strrchr (path, '/');
-      if (trailing_slash)
-        cookie->path = strdupdelim (path, trailing_slash + 1);
-      else
-        /* no slash in the string -- can this even happen? */
-        cookie->path = xstrdup (path);
-    }
-  else
-    {
-      /* The cookie sets its own path; verify that it is legal. */
-      if (!check_path_match (cookie->path, path))
-        {
-          DEBUGP (("Attempt to fake the path: %s, %s\n",
-                   cookie->path, path));
-          goto out;
-        }
-    }
-
-  /* Now store the cookie, or discard an existing cookie, if
-     discarding was requested.  */
-
-  if (cookie->discard_requested)
-    {
-      discard_matching_cookie (jar, cookie);
-      goto out;
-    }
-
-  store_cookie (jar, cookie);
-  return;
-
- out:
-  if (cookie)
-    delete_cookie (cookie);
-}
-
-/* Support for sending out cookies in HTTP requests, based on
-   previously stored cookies.  Entry point is
-   `build_cookies_request'.  */
-
 /* Return a count of how many times CHR occurs in STRING. */
 
 static int
@@ -851,6 +785,123 @@ find_chains_of_host (struct cookie_jar *jar, const char *host,
 
   return dest_count;
 }
+
+/* Process the HTTP `Set-Cookie' header.  This results in storing the
+   cookie or discarding a matching one, or ignoring it completely, all
+   depending on the contents.  */
+
+
+void
+cookie_handle_set_cookie (struct cookie_jar *jar,
+                          const char *host, int port,
+                          const char *path, enum url_scheme scheme,
+                          const char *set_cookie)
+{
+  struct cookie *cookie, *old_cookie;
+  struct cookie **chains;
+  int chain_count, i;
+  cookies_now = time (NULL);
+
+  /* Wget's paths don't begin with '/' (blame rfc1808), but cookie
+     usage assumes /-prefixed paths.  Until the rest of Wget is fixed,
+     simply prepend slash to PATH.  */
+  PREPEND_SLASH (path);
+
+  cookie = parse_set_cookie (set_cookie, scheme, false);
+  if (!cookie)
+    goto out;
+
+  /* Sanitize parts of cookie. */
+
+  if (!cookie->domain)
+    {
+      cookie->domain = xstrdup (host);
+      cookie->domain_exact = 1;
+      /* Set the port, but only if it's non-default. */
+      if (port != 80 && port != 443)
+        cookie->port = port;
+    }
+  else
+    {
+      if (!check_domain_match (cookie->domain, host))
+        {
+          logprintf (LOG_NOTQUIET,
+                     _("Cookie coming from %s attempted to set domain to "),
+                     quotearg_style (escape_quoting_style, host));
+          logprintf (LOG_NOTQUIET,
+                     _("%s\n"),
+                     quotearg_style (escape_quoting_style, cookie->domain));
+          cookie->discard_requested = true;
+        }
+    }
+
+  if (!cookie->path)
+    {
+      /* The cookie doesn't set path: set it to the URL path, sans the
+         file part ("/dir/file" truncated to "/dir/").  */
+      char *trailing_slash = strrchr (path, '/');
+      if (trailing_slash)
+        cookie->path = strdupdelim (path, trailing_slash + 1);
+      else
+        /* no slash in the string -- can this even happen? */
+        cookie->path = xstrdup (path);
+    }
+  else
+    {
+      /* The cookie sets its own path; verify that it is legal. */
+      if (!check_path_match (cookie->path, path))
+        {
+          DEBUGP (("Attempt to fake the path: %s, %s\n",
+                   cookie->path, path));
+          goto out;
+        }
+    }
+
+#ifdef HAVE_SSL
+  if ((cookie->secure == 0) && (scheme != SCHEME_HTTPS))
+    {
+      /* If an old cookie exists such that the all of the following are
+         true, then discard the new cookie.
+
+         - The "domain" domain-matches the domain of the new cookie
+         - The "name" matches the "name" of the new cookie
+         - Secure-only flag of old cookie is set */
+
+      chains = alloca_array (struct cookie *, 1 + count_char (host, '.'));
+      chain_count = find_chains_of_host (jar, host, chains);
+
+      for (i = 0; i < chain_count; i++)
+        for (old_cookie = chains[i]; old_cookie; old_cookie = old_cookie->next)
+          {
+            if (!cookie_expired_p(old_cookie)
+                && !(old_cookie->domain_exact 
+                     && 0 != strcasecmp (host, old_cookie->domain))
+                && 0 == strcasecmp(old_cookie->attr, cookie->attr)
+                && 1 == old_cookie->secure)
+              goto out;
+          }
+    }
+#endif
+  /* Now store the cookie, or discard an existing cookie, if
+     discarding was requested.  */
+
+  if (cookie->discard_requested)
+    {
+      discard_matching_cookie (jar, cookie);
+      goto out;
+    }
+
+  store_cookie (jar, cookie);
+  return;
+
+ out:
+  if (cookie)
+    delete_cookie (cookie);
+}
+
+/* Support for sending out cookies in HTTP requests, based on
+   previously stored cookies.  Entry point is
+   `build_cookies_request'.  */
 
 /* If FULL_PATH begins with PREFIX, return the length of PREFIX, zero
    otherwise.  */
@@ -1410,6 +1461,9 @@ test_cookies (void)
   };
   int i;
 
+  /* The uri scheme doesn't make a difference in these tests */
+  enum url_scheme scheme = SCHEME_HTTP;
+
   for (i = 0; i < countof (tests_succ); i++)
     {
       int ind;
@@ -1417,7 +1471,7 @@ test_cookies (void)
       const char **expected = tests_succ[i].results;
       struct cookie *c;
 
-      c = parse_set_cookie (data, true);
+      c = parse_set_cookie (data, scheme, true);
       if (!c)
         {
           printf ("NULL cookie returned for valid data: %s\n", data);
@@ -1457,7 +1511,7 @@ test_cookies (void)
     {
       struct cookie *c;
       char *data = tests_fail[i];
-      c = parse_set_cookie (data, true);
+      c = parse_set_cookie (data, scheme, true);
       if (c)
         printf ("Failed to report error on invalid data: %s\n", data);
     }
