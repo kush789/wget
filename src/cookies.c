@@ -440,6 +440,7 @@ parse_set_cookie (const char *set_cookie, enum url_scheme scheme,
         }
       else if (TOKEN_IS (name, "secure"))
         {
+#ifdef HAVE_SSL
           if (scheme == SCHEME_HTTPS)
           /* Ignore value completely since secure is a value-less 
              attribute*/
@@ -452,9 +453,17 @@ parse_set_cookie (const char *set_cookie, enum url_scheme scheme,
                   logprintf (LOG_NOTQUIET, 
                             _("Trying to create secure only cookie, but connection is not secure.\nSet-Cookie : %s\n"),
                               quotearg_style (escape_quoting_style, set_cookie));
-                delete_cookie (cookie);
-                return NULL;
+              delete_cookie (cookie);
+              return NULL;
             }
+#else
+          if (!silent)
+              logprintf (LOG_NOTQUIET, 
+                        _("Trying to create secure only cookie, wget configured with\" --without-ssl.\nSet-Cookie : %s\n"),
+                          quotearg_style (escape_quoting_style, set_cookie));
+          delete_cookie (cookie);
+          return NULL;
+#endif
         }
       /* else: Ignore unrecognized attribute. */
     }
@@ -848,6 +857,7 @@ cookie_handle_set_cookie (struct cookie_jar *jar,
         }
     }
 
+#ifdef HAVE_SSL
   if ((cookie->secure == 0) && (scheme != SCHEME_HTTPS))
     {
       /* If an old cookie exists such that the all of the following are
@@ -871,6 +881,7 @@ cookie_handle_set_cookie (struct cookie_jar *jar,
               goto out;
           }
     }
+#endif
   /* Now store the cookie, or discard an existing cookie, if
      discarding was requested.  */
 
